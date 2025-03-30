@@ -17,6 +17,102 @@
 #include <time.h>
 #include <unistd.h>
 
+/*** config parser ***/
+
+#define MAX_LINE_LENGTH 1024
+#define DEFAULT_CONFIG_DIR "~/.config"
+#define CONFIG_FILE "hyprpad.conf"
+
+int tab_stop = 8;
+int quit_times = 3;
+
+typedef struct {
+    char *key;
+    char *value;
+} ConfigEntry;
+
+char *get_config_file_path() {
+    char *config_dir = getenv("XDG_CONFIG_HOME");
+    if (!config_dir) {
+        config_dir = getenv("HOME");
+        if (!config_dir) {
+            fprintf(stderr, "Unable to determine config directory.\n");
+            exit(1);
+        }
+    }
+
+    size_t path_size = strlen(config_dir) + strlen("/.config/hypr/") + strlen(CONFIG_FILE) + 1;
+    char *config_path = malloc(path_size);
+
+    snprintf(config_path, path_size, "%s/.config/hypr/%s", config_dir, CONFIG_FILE);
+    return config_path;
+}
+
+int config_file_exists(const char *config_path) {
+  FILE *file = fopen(config_path, "r");
+  if (file) {
+    fclose(file);
+    return 1; // File exists
+  }
+  return 0; // File does not exist
+}
+
+void create_default_config(const char *config_path) {
+  FILE *file = fopen(config_path, "w");
+  if (!file) {
+    perror("Unable to create config file");
+    return;
+  }
+
+  fprintf(file, "# Hyprpad configuration file\n");
+  fprintf(file, "tab_stop=8\n");
+  fprintf(file, "quit_times=3\n");
+
+  fclose(file);
+}
+
+ConfigEntry *parse_config(const char *config_path, size_t *out_entry_count) {
+    FILE *file = fopen(config_path, "r");
+    if (!file) {
+        perror("Unable to open config file");
+        return NULL;
+    }
+
+    ConfigEntry *entries = malloc(sizeof(ConfigEntry) * 10);
+    size_t entry_count = 0;
+    char line[MAX_LINE_LENGTH];
+
+    while (fgets(line, sizeof(line), file)) {
+        if (line[0] == '\0' || line[0] == '#') {
+            continue;
+        }
+
+        char *equal_pos = strchr(line, '=');
+        if (equal_pos) {
+            *equal_pos = '\0';
+
+            char *key = line;
+            char *value = equal_pos + 1;
+            while (*key && isspace((unsigned char)*key)) key++;
+            while (*value && isspace((unsigned char)*value)) value++;
+
+            entries[entry_count].key = strdup(key);
+            entries[entry_count].value = strdup(value);
+            entry_count++;
+
+            if (entry_count % 10 == 0) {
+                entries = realloc(entries, sizeof(ConfigEntry) * (entry_count + 10));
+            }
+        }
+    }
+
+    fclose(file);
+
+    *out_entry_count = entry_count;
+    return entries;
+}
+
+
 /*** defines ***/
 
 #define HYPRPAD_VERSION "0.0.1"
@@ -123,6 +219,18 @@ void editorRefreshScreen();
 char *editorPrompt(char *prompt, void (*callback)(char *, int));
 
 /*** terminal ***/
+
+void use_config(ConfigEntry *entries, size_t entry_count) {
+  for (size_t i = 0; i < entry_count; i++) {
+    if (strcmp(entries[i].key, "tab_stop") == 0) {
+       tab_stop = atoi(entries[i].value);
+       printf("Set tab_stop to: %d\n", tab_stop);
+    } else if (strcmp(entries[i].key, "quit_times") == 0) {
+       quit_times = atoi(entries[i].value);
+       printf("Set quit_times to: %d\n", quit_times);
+    }
+  }
+}
 
 void die(const char *s) {
   write(STDOUT_FILENO, "\x1b[2J", 4);
@@ -402,7 +510,7 @@ int editorRowCxToRx(erow *row, int cx) {
   int j;
   for (j = 0; j < cx; j++) {
     if (row->chars[j] == '\t')
-      rx += (HYPRPAD_TAB_STOP - 1) - (rx % HYPRPAD_TAB_STOP);
+      rx += (tab_stop - 1) - (rx % tab_stop); // Use tab_stop from config
     rx++;
   }
   return rx;
@@ -413,7 +521,7 @@ int editorRowRxToCx(erow *row, int rx) {
   int cx;
   for (cx = 0; cx < row->size; cx++) {
     if (row->chars[cx] == '\t')
-      cur_rx += (HYPRPAD_TAB_STOP - 1) - (cur_rx % HYPRPAD_TAB_STOP);
+      cur_rx += (tab_stop - 1) - (cur_rx % tab_stop); // Use tab_stop from config
     cur_rx++;
 
     if (cur_rx > rx) return cx;
@@ -428,13 +536,13 @@ void editorUpdateRow(erow *row) {
     if (row->chars[j] == '\t') tabs++;
 
   free(row->render);
-  row->render = malloc(row->size + tabs*(HYPRPAD_TAB_STOP - 1) + 1);
+  row->render = malloc(row->size + tabs * (tab_stop - 1) + 1); // Use tab_stop from config
 
   int idx = 0;
   for (j = 0; j < row->size; j++) {
     if (row->chars[j] == '\t') {
       row->render[idx++] = ' ';
-      while (idx % HYPRPAD_TAB_STOP != 0) row->render[idx++] = ' ';
+      while (idx % tab_stop != 0) row->render[idx++] = ' '; // Use tab_stop from config
     } else {
       row->render[idx++] = row->chars[j];
     }
@@ -949,8 +1057,6 @@ void editorMoveCursor(int key) {
 }
 
 void editorProcessKeypress() {
-  static int quit_times = HYPRPAD_QUIT_TIMES;
-
   int c = editorReadKey();
 
   switch (c) {
@@ -959,15 +1065,29 @@ void editorProcessKeypress() {
       break;
 
     case CTRL_KEY('q'):
-      if (E.dirty && quit_times > 0) {
-        editorSetStatusMessage("WARNING!!! File has unsaved changes. "
-          "Press Ctrl-Q %d more times to quit.", quit_times);
-        quit_times--;
-        return;
+      if (E.dirty) {
+        editorSetStatusMessage("Unsaved changes. Save? (y/n) or ESC to cancel");
+        editorRefreshScreen(); // Ensure the status message is displayed
+        int confirm = editorReadKey();
+        if (confirm == 'y') {
+          editorSave();
+          write(STDOUT_FILENO, "\x1b[2J", 4); // Clear the screen
+          write(STDOUT_FILENO, "\x1b[H", 3);  // Move cursor to top-left
+          exit(0);
+        } else if (confirm == 'n') {
+          write(STDOUT_FILENO, "\x1b[2J", 4); // Clear the screen
+          write(STDOUT_FILENO, "\x1b[H", 3);  // Move cursor to top-left
+          exit(0);
+        } else {
+          editorSetStatusMessage("Quit canceled");
+          editorRefreshScreen(); // Refresh to show the canceled message
+          return;
+        }
+      } else {
+        write(STDOUT_FILENO, "\x1b[2J", 4); // Clear the screen
+        write(STDOUT_FILENO, "\x1b[H", 3);  // Move cursor to top-left
+        exit(0);
       }
-      write(STDOUT_FILENO, "\x1b[2J", 4);
-      write(STDOUT_FILENO, "\x1b[H", 3);
-      exit(0);
       break;
 
     case CTRL_KEY('s'):
@@ -1025,8 +1145,6 @@ void editorProcessKeypress() {
       editorInsertChar(c);
       break;
   }
-
-  quit_times = HYPRPAD_QUIT_TIMES;
 }
 
 /*** init ***/
@@ -1050,14 +1168,32 @@ void initEditor() {
 }
 
 int main(int argc, char *argv[]) {
+  char *config_path = get_config_file_path();
+
+  if (!config_file_exists(config_path)) {
+    printf("Config file not found. Creating default config...\n");
+    create_default_config(config_path);
+  }
+
+  size_t entry_count = 0;
+  ConfigEntry *entries = parse_config(config_path, &entry_count);
+  use_config(entries, entry_count);
+
+  for (size_t i = 0; i < entry_count; i++) {
+    free(entries[i].key);
+    free(entries[i].value);
+  }
+  free(entries);
+  free(config_path);
+
   enableRawMode();
   initEditor();
+
   if (argc >= 2) {
     editorOpen(argv[1]);
   }
 
-  editorSetStatusMessage(
-    "HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find");
+  editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find");
 
   while (1) {
     editorRefreshScreen();
