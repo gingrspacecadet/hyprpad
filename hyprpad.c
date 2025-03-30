@@ -1174,11 +1174,53 @@ void editorJumpToMatchingBracket() {
   }
 }
 
+void editorMoveToLineStart() {
+  E.cx = 0;
+}
+
+void editorMoveToFirstNonWhitespace() {
+  if (E.cy >= E.numrows) return;
+  erow *row = &E.row[E.cy];
+  E.cx = 0;
+  while (E.cx < row->size && isspace(row->chars[E.cx])) E.cx++;
+}
+
+void editorMoveToLineEnd() {
+  if (E.cy >= E.numrows) return;
+  E.cx = E.row[E.cy].size;
+}
+
+void editorMoveToFileStart() {
+  E.cy = 0;
+  editorMoveToLineStart();
+}
+
+void editorMoveToFileEnd() {
+  E.cy = E.numrows - 1;
+  editorMoveToLineEnd();
+}
+
+void editorDeleteLine() {
+  if (E.cy >= E.numrows) return;
+  editorDelRow(E.cy);
+  if (E.cy >= E.numrows) E.cy--;
+  E.cx = 0;
+}
+
 void editorProcessKeypress() {
   static int vi_mode = 1; // Start in normal mode
+  static int last_key = 0; // For multi-key commands like 'gg'
   int c = editorReadKey();
 
   if (vi_mode) {
+    if (last_key == 'g' && c == 'g') {
+      editorMoveToFileStart();
+      last_key = 0;
+      return;
+    }
+
+    last_key = 0;
+
     switch (c) {
       case 'i':
         vi_mode = 0; // Switch to insert mode
@@ -1208,6 +1250,24 @@ void editorProcessKeypress() {
         break;
       case '%':
         editorJumpToMatchingBracket();
+        break;
+      case '0':
+        editorMoveToLineStart();
+        break;
+      case '^':
+        editorMoveToFirstNonWhitespace();
+        break;
+      case '$':
+        editorMoveToLineEnd();
+        break;
+      case 'G':
+        editorMoveToFileEnd();
+        break;
+      case 'g':
+        last_key = 'g'; // Wait for the next key to complete 'gg'
+        break;
+      case 'd':
+        editorDeleteLine();
         break;
       case 'x':
         editorDelChar();
