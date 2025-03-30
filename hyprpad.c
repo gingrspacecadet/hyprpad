@@ -1104,6 +1104,76 @@ void editorMoveCursorVi(int key) {
   }
 }
 
+void editorMoveToWordStart() {
+  if (E.cy >= E.numrows) return;
+  erow *row = &E.row[E.cy];
+  while (E.cx > 0 && isspace(row->chars[E.cx - 1])) E.cx--;
+  while (E.cx > 0 && !isspace(row->chars[E.cx - 1])) E.cx--;
+}
+
+void editorMoveToWordEnd() {
+  if (E.cy >= E.numrows) return;
+  erow *row = &E.row[E.cy];
+  while (E.cx < row->size && !isspace(row->chars[E.cx])) E.cx++;
+  while (E.cx < row->size && isspace(row->chars[E.cx])) E.cx++;
+}
+
+void editorMoveToPrevWord() {
+  if (E.cy >= E.numrows) return;
+  erow *row = &E.row[E.cy];
+  while (E.cx > 0 && isspace(row->chars[E.cx - 1])) E.cx--;
+  while (E.cx > 0 && !isspace(row->chars[E.cx - 1])) E.cx--;
+}
+
+void editorJumpToMatchingBracket() {
+  if (E.cy >= E.numrows) return;
+  erow *row = &E.row[E.cy];
+  char current = row->chars[E.cx];
+  char match = 0;
+
+  if (current == '(') match = ')';
+  else if (current == ')') match = '(';
+  else if (current == '{') match = '}';
+  else if (current == '}') match = '{';
+  else if (current == '[') match = ']';
+  else if (current == ']') match = '[';
+
+  if (match == 0) return;
+
+  int direction = (current == '(' || current == '{' || current == '[') ? 1 : -1;
+  int count = 0;
+
+  while (1) {
+    if (direction > 0) {
+      if (E.cx < row->size - 1) {
+        E.cx++;
+      } else if (E.cy < E.numrows - 1) {
+        E.cy++;
+        row = &E.row[E.cy];
+        E.cx = 0;
+      } else {
+        break;
+      }
+    } else {
+      if (E.cx > 0) {
+        E.cx--;
+      } else if (E.cy > 0) {
+        E.cy--;
+        row = &E.row[E.cy];
+        E.cx = row->size;
+      } else {
+        break;
+      }
+    }
+
+    if (row->chars[E.cx] == current) count++;
+    if (row->chars[E.cx] == match) {
+      if (count == 0) break;
+      count--;
+    }
+  }
+}
+
 void editorProcessKeypress() {
   static int vi_mode = 1; // Start in normal mode
   int c = editorReadKey();
@@ -1125,6 +1195,19 @@ void editorProcessKeypress() {
         break;
       case 'l':
         editorMoveCursor(ARROW_RIGHT);
+        break;
+      case 'w':
+        editorMoveToWordEnd();
+        break;
+      case 'e':
+        editorMoveToWordEnd();
+        if (E.cx < E.row[E.cy].size) E.cx++; // Move to the end of the word
+        break;
+      case 'b':
+        editorMoveToPrevWord();
+        break;
+      case '%':
+        editorJumpToMatchingBracket();
         break;
       case 'x':
         editorDelChar();
