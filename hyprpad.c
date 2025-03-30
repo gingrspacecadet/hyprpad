@@ -120,6 +120,7 @@ ConfigEntry *parse_config(const char *config_path, size_t *out_entry_count) {
 #define HYPRPAD_QUIT_TIMES 3
 
 #define CTRL_KEY(k) ((k) & 0x1f)
+#define ESC_KEY 27
 
 enum editorKey {
   BACKSPACE = 127,
@@ -987,20 +988,20 @@ char *editorPrompt(char *prompt, void (*callback)(char *, int)) {
   buf[0] = '\0';
 
   while (1) {
-    editorSetStatusMessage(prompt, buf);
+    editorSetStatusMessage("%s%s", prompt, buf); // Append buffer to prompt
     editorRefreshScreen();
 
     int c = editorReadKey();
     if (c == DEL_KEY || c == CTRL_KEY('h') || c == BACKSPACE) {
       if (buflen != 0) buf[--buflen] = '\0';
     } else if (c == '\x1b') {
-      editorSetStatusMessage("");
+      editorSetStatusMessage(""); // Clear status message on escape
       if (callback) callback(buf, c);
       free(buf);
       return NULL;
     } else if (c == '\r') {
       if (buflen != 0) {
-        editorSetStatusMessage("");
+        editorSetStatusMessage(""); // Clear status message on enter
         if (callback) callback(buf, c);
         return buf;
       }
@@ -1056,94 +1057,122 @@ void editorMoveCursor(int key) {
   }
 }
 
-void editorProcessKeypress() {
-  int c = editorReadKey();
+/*** command line ***/
 
-  switch (c) {
-    case '\r':
-      editorInsertNewline();
-      break;
-
-    case CTRL_KEY('q'):
+void editorCommandLine() {
+  char *command = editorPrompt(":", NULL);
+  if (command) {
+    if (strcmp(command, "q") == 0) {
       if (E.dirty) {
-        editorSetStatusMessage("Unsaved changes. Save? (y/n) or ESC to cancel");
-        editorRefreshScreen(); // Ensure the status message is displayed
-        int confirm = editorReadKey();
-        if (confirm == 'y') {
-          editorSave();
-          write(STDOUT_FILENO, "\x1b[2J", 4); // Clear the screen
-          write(STDOUT_FILENO, "\x1b[H", 3);  // Move cursor to top-left
-          exit(0);
-        } else if (confirm == 'n') {
-          write(STDOUT_FILENO, "\x1b[2J", 4); // Clear the screen
-          write(STDOUT_FILENO, "\x1b[H", 3);  // Move cursor to top-left
-          exit(0);
-        } else {
-          editorSetStatusMessage("Quit canceled");
-          editorRefreshScreen(); // Refresh to show the canceled message
-          return;
-        }
+        editorSetStatusMessage("Unsaved changes. Use :q! to force quit.");
       } else {
+        free(command);
         write(STDOUT_FILENO, "\x1b[2J", 4); // Clear the screen
         write(STDOUT_FILENO, "\x1b[H", 3);  // Move cursor to top-left
         exit(0);
       }
-      break;
-
-    case CTRL_KEY('s'):
+    } else if (strcmp(command, "q!") == 0) {
+      free(command);
+      write(STDOUT_FILENO, "\x1b[2J", 4); // Clear the screen
+      write(STDOUT_FILENO, "\x1b[H", 3);  // Move cursor to top-left
+      exit(0);
+    } else if (strcmp(command, "w") == 0) {
       editorSave();
-      break;
+    } else {
+      editorSetStatusMessage("Unknown command: %s", command);
+    }
+    free(command);
+  }
+}
 
-    case HOME_KEY:
-      E.cx = 0;
-      break;
+/*** input ***/
 
-    case END_KEY:
-      if (E.cy < E.numrows)
-        E.cx = E.row[E.cy].size;
+void editorMoveCursorVi(int key) {
+  switch (key) {
+    case 'h':
+      editorMoveCursor(ARROW_LEFT);
       break;
-
-    case CTRL_KEY('f'):
-      editorFind();
+    case 'l':
+      editorMoveCursor(ARROW_RIGHT);
       break;
-
-    case BACKSPACE:
-    case CTRL_KEY('h'):
-    case DEL_KEY:
-      if (c == DEL_KEY) editorMoveCursor(ARROW_RIGHT);
-      editorDelChar();
+    case 'k':
+      editorMoveCursor(ARROW_UP);
       break;
-
-    case PAGE_UP:
-    case PAGE_DOWN:
-      {
-        if (c == PAGE_UP) {
-          E.cy = E.rowoff;
-        } else if (c == PAGE_DOWN) {
-          E.cy = E.rowoff + E.screenrows - 1;
-          if (E.cy > E.numrows) E.cy = E.numrows;
-        }
-
-        int times = E.screenrows;
-        while (times--)
-          editorMoveCursor(c == PAGE_UP ? ARROW_UP : ARROW_DOWN);
-      }
+    case 'j':
+      editorMoveCursor(ARROW_DOWN);
       break;
+  }
+}
 
-    case ARROW_UP:
-    case ARROW_DOWN:
-    case ARROW_LEFT:
-    case ARROW_RIGHT:
-      editorMoveCursor(c);
-      break;
+void editorProcessKeypress() {
+  static int vi_mode = 1; // Start in normal mode
+  int c = editorReadKey();
 
-    case CTRL_KEY('l'):
-    case '\x1b':
-      break;
+  if (vi_mode) {
+    switch (c) {
+      case 'i':
+        vi_mode = 0; // Switch to insert mode
+        editorSetStatusMessage("-- INSERT --");
+        break;
+      case 'h':
+        editorMoveCursor(ARROW_LEFT);
+        break;
+      case 'j':
+        editorMoveCursor(ARROW_DOWN);
+        break;
+      case 'k':
+        editorMoveCursor(ARROW_UP);
+        break;
+      case 'l':
+        editorMoveCursor(ARROW_RIGHT);
+        break;
+      case 'x':
+        editorDelChar();
+        break;
+      case 'o':
+        editorInsertNewline();
+        vi_mode = 0; // Switch to insert mode
+        editorSetStatusMessage("-- INSERT --");
+        break;
+      case ':':
+        editorCommandLine();
+        break;
+      case 'q':
+        editorSetStatusMessage("Use :q to quit.");
+        break;
+      default:
+        editorSetStatusMessage("Unknown command in normal mode.");
+        break;
+    }
+  } else {
+    switch (c) {
+      case '\r':
+        editorInsertNewline();
+        break;
 
-    default:
-      editorInsertChar(c);
-      break;
+      case ESC_KEY:
+        vi_mode = 1; // Switch to normal mode
+        editorSetStatusMessage("-- NORMAL --");
+        break;
+
+      case BACKSPACE:
+      case CTRL_KEY('h'):
+      case DEL_KEY:
+        if (c == DEL_KEY) editorMoveCursor(ARROW_RIGHT);
+        editorDelChar();
+        break;
+
+      case ARROW_UP:
+      case ARROW_DOWN:
+      case ARROW_LEFT:
+      case ARROW_RIGHT:
+        editorMoveCursor(c);
+        break;
+
+      default:
+        editorInsertChar(c);
+        break;
+    }
   }
 }
 
