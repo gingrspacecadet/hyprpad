@@ -1,4 +1,4 @@
-Maintainer: gingrspacecadet@github.com
+#Maintainer: gingrspacecadet@github.comi
 pkgname=hyprpad
 pkgver=0.1
 pkgrel=1
