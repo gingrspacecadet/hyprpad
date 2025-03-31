@@ -1,0 +1,1 @@
+/home/gngr/projects/hyprpad/Makefile
